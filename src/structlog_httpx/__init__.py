@@ -208,13 +208,15 @@ class HttpxLoggingInstrumentor:
             if self._should_log_response_body(response):
                 try:
                     response.read()  # Load into memory
-                except Exception:
+                except httpx.ResponseNotRead:
                     pass
 
             response_body = None
-            if hasattr(response, "content"):
-                if self.log_response_body:
+            if self._should_log_response_body(response):
+                try:
                     response_body = self._truncate_body(response.content)
+                except httpx.ResponseNotRead:
+                    pass  # Can't log body of streaming response
 
             if response_body:
                 event_kw["response_body"] = response_body
@@ -271,18 +273,19 @@ class HttpxLoggingInstrumentor:
         # Only log headers and body on errors
         if is_error:
             event_kw["response_headers"] = self._redact_headers(response.headers)
-
             # Handle Response Body only on errors
             if self._should_log_response_body(response):
                 try:
                     await response.aread()
-                except Exception:
+                except httpx.ResponseNotRead:
                     pass
 
             response_body = None
-            if hasattr(response, "content"):
-                if self.log_response_body:
+            if self._should_log_response_body(response):
+                try:
                     response_body = self._truncate_body(response.content)
+                except httpx.ResponseNotRead:
+                    pass  # Can't log body of streaming response
 
             if response_body:
                 event_kw["response_body"] = response_body
