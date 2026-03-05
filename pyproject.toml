@@ -1,7 +1,7 @@
 [project]
 name = "structlog-httpx"
-version = "0.1.0"
-description = "Structured logging for HTTPX using structlog"
+version = "0.2.0"
+description = "Structured logging for outgoing HTTPX requests using structlog"
 readme = "README.md"
 authors = [
     { name = "Nikita Senin", email = "nikita1e0cf@gmail.com" }
@@ -11,6 +11,13 @@ dependencies = [
     "httpx>=0.20.0",
     "structlog>=20.0.0",
     "wrapt>=2.1.1",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "respx>=0.22",
 ]
 
 [build-system]

@@ -1,13 +1,14 @@
 # structlog-httpx
 
-Rich structured logging for HTTPX using `structlog` and `event_hooks`.
+Structured logging for outgoing HTTPX requests using `structlog`.
 
 ## Features
 
-- **Non-invasive**: Uses standard `httpx` event hooks mechanism. No need to replace your `Client` class.
-- **Rich Data**: Logs request URL, method, headers, response status, duration, and body (optional).
-- **Hybrid Support**: Works with both synchronous `httpx.Client` and asynchronous `httpx.AsyncClient`.
-- **Safe**: Doesn't break response streaming or affect performance by default.
+- **Zero-config**: One `install()` call instruments all httpx clients globally.
+- **Per-client control**: Name clients, override config and processors per client.
+- **Processor pipeline**: Composable processors inspired by structlog's own design.
+- **Smart defaults**: Sensitive header redaction, content-type body filtering, body truncation — all out of the box.
+- **Async/sync**: Full support for both `httpx.Client` and `httpx.AsyncClient`.
 
 ## Installation
 
@@ -15,40 +16,132 @@ Rich structured logging for HTTPX using `structlog` and `event_hooks`.
 uv add structlog-httpx
 ```
 
-## Usage
+## Quick Start
 
-### Basic
+```python
+from structlog_httpx import install
+
+# That's it. All httpx requests are now logged.
+install()
+```
+
+## Configuration
+
+### LoggingConfig
+
+Controls **what** data is collected:
+
+```python
+from structlog_httpx import install, LoggingConfig
+
+install(
+    config=LoggingConfig(
+        log_request_body=True,
+        log_response_body=True,
+        log_request_headers=True,
+        log_response_headers=True,
+    ),
+)
+```
+
+### Per-client instrumentation
 
 ```python
 import httpx
-from structlog_httpx import hooks
+from structlog_httpx import instrument_client, LoggingConfig
 
-# Synchronous
-client = httpx.Client(event_hooks=hooks)
-client.get("https://example.com")
-
-# Asynchronous
-# import structlog_httpx
-# client = httpx.AsyncClient(event_hooks=structlog_httpx.async_hooks)
+client = httpx.AsyncClient(base_url="https://api.example.com")
+instrument_client(
+    client,
+    name="example",                                     # appears as client_name in logs
+    config=LoggingConfig(log_response_body=True),        # override global config
+)
 ```
 
-### Advanced Configuration
-
-You can configure what to log (headers, body):
+### Transport wrapper (advanced)
 
 ```python
-from structlog_httpx import StructLogHooks
+import httpx
+from structlog_httpx import AsyncStructlogTransport, LoggingConfig
 
-# Enable headers and body logging
-# NOTE: logging body forces reading the response into memory!
-hooks_config = StructLogHooks(log_headers=True, log_body=True)
-
-async with httpx.AsyncClient(event_hooks=hooks_config.async_hooks) as client:
-    await client.get("https://example.com")
+transport = AsyncStructlogTransport(
+    transport=httpx.AsyncHTTPTransport(),
+    name="example-gateway",
+    config=LoggingConfig(log_request_body=True, log_response_body=True),
+)
+client = httpx.AsyncClient(transport=transport)
 ```
 
-### Integration with `structlog-config`
+## Processors
 
-This library plays perfectly with `structlog-config`. Since `structlog-config` silences the default `httpx` logger (to WARNING level), using `structlog-httpx` allows you to have full control over your HTTP logs without duplicate output.
+Processors control **how** collected data is processed before logging. They run in order and can modify or suppress log events.
 
-See `examples/httpx_integration.py` in the root repository for a full example.
+### Built-in processors (enabled by default)
+
+- `RedactSensitiveHeaders` — replaces sensitive header values with `[REDACTED]`
+- `FilterBodyByContentType` — removes response body for non-structured content types (HTML, images, etc.)
+- `TruncateBodies` — truncates large bodies to prevent log bloat
+
+### Custom processors
+
+```python
+from structlog_httpx import BaseProcessor, install
+
+class DetectApiErrors(BaseProcessor):
+    """Detect errors returned as 200 OK with error in JSON body."""
+
+    def process(self, request, response, event):
+        if response and response.status_code == 200:
+            try:
+                data = response.json()
+                if "error" in data or data.get("success") is False:
+                    event["level"] = "error"
+                    event["api_error"] = data.get("error", data.get("message"))
+            except Exception:
+                pass
+        return event
+
+install(processors=[DetectApiErrors()])
+```
+
+### Processor composition
+
+```python
+from structlog_httpx import install, instrument_client, RedactSensitiveHeaders, TruncateBodies
+
+# Global: default processors + custom
+install(processors=[DetectApiErrors()])
+
+# Per-client: inherits global processors + adds its own
+instrument_client(client, name="binance", processors=[BinanceSpecificProcessor()])
+
+# Per-client: only its own processors (no inheritance)
+instrument_client(client, name="internal", processors=[MinimalProcessor()], inherit_processors=False)
+```
+
+### Configuring built-in processors
+
+```python
+from structlog_httpx import install, RedactSensitiveHeaders, FilterBodyByContentType, TruncateBodies
+
+install(
+    processors=[
+        RedactSensitiveHeaders(sensitive={"authorization", "x-custom-secret"}),
+        FilterBodyByContentType(allowed={"application/json"}),
+        TruncateBodies(max_size=4096),
+    ],
+    include_default_processors=False,  # replace defaults entirely
+)
+```
+
+## Uninstall
+
+```python
+from structlog_httpx import uninstall, uninstrument_client
+
+# Remove global instrumentation
+uninstall()
+
+# Remove per-client instrumentation
+uninstrument_client(client)
+```
